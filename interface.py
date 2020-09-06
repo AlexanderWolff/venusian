@@ -52,6 +52,30 @@ def get_orbit(orbit=2996, debug=False):
          'ELS': data['ELS']['timeDt'],
          'MAG': data['MAG']['timeDt']}
     return (frame, t)
+    
+def get_orbit_from(path, orbit=2996, debug=False):
+    import numpy
+
+    minbracket = int(numpy.floor(orbit/10)*10)
+    maxbracket = minbracket+10
+
+    if(debug):
+        print("getting orbit {} in {} to {} bracket".format(orbit, minbracket, maxbracket))
+
+    file = "venus_specdata_{}-{}.npy".format(minbracket, maxbracket)
+
+    data = IO.get_data(filepath=path, filename=file)
+    data = data[str(orbit)]
+                
+    frame = {'IMA': data['IMA']['spec'],
+             'ELS': data['ELS']['spec'],
+             'MAG': data['MAG']['spec']}
+
+    t = {'IMA': data['IMA']['timeDt'],
+         'ELS': data['ELS']['timeDt'],
+         'MAG': data['MAG']['timeDt']}
+    return (frame, t)
+
 
 def check_validity(frame, t):
 
@@ -96,9 +120,12 @@ def check_validity(frame, t):
     return (ima, els, mag)
 
 
-def plot_data(frame, t, xsize=9, ysize=6, valid=0):
+def plot_data(frame, t, xsize=9, ysize=6, valid=0, dev=True):
 
     global ylimits
+    
+    if dev:
+        ylimits = {'IMA': [0, 96], 'ELS' : [0, 128], 'MAG': [-40, 40]}
 
     if valid == 0:
         valid = check_validity(frame,t)
