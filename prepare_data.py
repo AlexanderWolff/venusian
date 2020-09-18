@@ -14,7 +14,7 @@ import matplotlib.colors as colors
 import matplotlib.dates
 
 
-def get_data(orbit, instrument, datapath, preview = False, debug=False, verbose=False):
+def get_data(orbit, instrument, datapath, raw = False, preview = False, debug=False, verbose=False):
     if verbose:
         print('orbit :{}'.format(orbit))
 
@@ -26,16 +26,83 @@ def get_data(orbit, instrument, datapath, preview = False, debug=False, verbose=
 
     data = (frame, t)
 
-    data_index, sample_rate = temporal_sections(data, instrument=instrument, sample_rate = 'common', max_skip = 5, verbose=verbose)
+    try:
+        data_index, sample_rate = temporal_sections(data, instrument=instrument, sample_rate = 'common', max_skip = 5, verbose=verbose)
 
-    dataframe = interpolate_sections(data, data_index, sample_rate = sample_rate, instrument=instrument, verbose=verbose)
+        dataframe = interpolate_sections(data, data_index, sample_rate = sample_rate, instrument=instrument, verbose=verbose)
 
-    dataframe = regroup(dataframe, instrument=instrument, sample_rate = sample_rate,  max_loss = 100, verbose=verbose)
+        dataframe = regroup(dataframe, instrument=instrument, sample_rate = sample_rate,  max_loss = 100, verbose=verbose)
         
-    return dataframe, sample_rate
+        if not raw:
+            if instrument == 'ELS':
+                if find_if_split(dataframe):
+                    if preview or verbose or debug:
+                        print("Warning: Four Streams Detected, preparing mitigation.")
+                    dataframe = converge(dataframe)
+                
+        return dataframe, sample_rate
+    except:
+        if preview or verbose or debug:
+            print("Error: Instrument not available.")
+        return None, None
 
+def find_if_split(dataframe):
+    traces = list()
+    for i in range(4):
+        a = i*32
+        b = ((i+1)*32)-1
+        part = dataframe.T[a:b].T
+        trace = part.mean().values.tolist()
+        traces.append(trace)
 
+    # normalise to 1
+    for i, trace in enumerate(traces):
+        traces[i] = np.array(traces[i])
+        traces[i] = traces[i]/traces[i].max()
 
+    # calculate mean squared error of all permutations
+    mean_squared_error = list()
+
+    for i in range(3):
+        for j in range(3-i):
+            k = 3-j
+            if i == k:
+                continue
+            else:
+                mean_squared_error.append( (traces[i]-traces[j]).mean()**2 )
+
+    # find overall error
+    E = sum(mean_squared_error)
+
+    # threshold is a magic number tuned through trial and error:
+    # when 4:
+    # 2.495214912134985e-06
+    # 1.2413893061441248e-06
+    #
+    # when 1:
+    # 0.010172269857076926
+    # 1.2742714511405433
+    # 0.16337868220793833
+    # 1.2132394469419747
+
+    threshold = 1e-5
+    if E > threshold:
+        return False
+    else:
+        # four parallel streams detecteds
+        return True
+        
+def converge(dataframe):
+    A = dataframe.T[0:31].T
+    B = dataframe.T[32:63].T
+    C = dataframe.T[64:95].T
+    D = dataframe.T[96:127].T
+
+    # improve by doing a denoising pixel check (by vote from each stream for each pixel to exclude anomalies)
+    E = A.values + B.values + C.values + D.values
+    E = pandas.DataFrame(E)
+    E.index = A.index
+    return E
 
 def temporal_sections( data, instrument, sample_rate = 'common', max_skip = 5, verbose = False ):
     frame, t = data
@@ -272,7 +339,7 @@ def regroup(dataframe, instrument, sample_rate, max_loss = 100, verbose = False)
 
 
 
-def display_data(dataframe):
+def display_data(dataframe, sample_rate):
     image = dataframe.T
     T = dataframe.index
     fig, ax = plt.subplots(figsize=(20,10))
