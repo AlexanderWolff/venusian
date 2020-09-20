@@ -27,20 +27,50 @@ def get_data(orbit, instrument, datapath, raw = False, preview = False, debug=Fa
     data = (frame, t)
 
     try:
-        data_index, sample_rate = temporal_sections(data, instrument=instrument, sample_rate = 'common', max_skip = 5, verbose=verbose)
+        dataset = dict()
+    
+        if instrument == 'IMA' or instrument == 'ELS':
+            data_index, sample_rate = temporal_sections(data, instrument=instrument, sample_rate = 'common', max_skip = 5, verbose=verbose)
 
-        dataframe = interpolate_sections(data, data_index, sample_rate = sample_rate, instrument=instrument, verbose=verbose)
+            dataframe = interpolate_sections(data, data_index, sample_rate = sample_rate, instrument=instrument, verbose=verbose)
 
-        dataframe = regroup(dataframe, instrument=instrument, sample_rate = sample_rate,  max_loss = 100, verbose=verbose)
+            dataframe = regroup(dataframe, instrument=instrument, sample_rate = sample_rate,  max_loss = 100, verbose=verbose)
+            dataset['sample_rate'] = sample_rate
+        else:
+            dataframe = pandas.DataFrame(frame[instrument], t[instrument])
+            
+            data_index, sample_rate = temporal_sections(data, instrument=instrument, sample_rate = 'common', max_skip = 5, verbose=verbose)
+            
+            dataset['sample_rate'] = sample_rate
+            
+        dataset['raw'] = dataframe
+        
+        dataset['default'] = dataset['raw']
         
         if not raw:
-            if instrument == 'ELS':
+        
+            if instrument == 'IMA':
+                
+                # there are times when the IMA data is not segmented into 16 periodic signals (eg. 2608)
+                # detection of these not yet implemented
+                dataset['default'] = combine_IMA(dataframe)
+                dataset['streams'] = separate_IMA(dataframe)
+                
+        
+            elif instrument == 'ELS':
                 if find_if_split(dataframe):
                     if preview or verbose or debug:
                         print("Warning: Four Streams Detected, preparing mitigation.")
-                    dataframe = converge(dataframe)
+                        
+                    dataset['streams'] = separate_ELS(dataframe)
+                    
+                    dataset['default'] = combine_ELS(dataframe)
+                    
+            elif instrument == 'MAG':
+                # linear might not be the best method of interpolation
+                dataset['default'] = dataset['raw'].interpolate(method = 'linear')
                 
-        return dataframe, sample_rate
+        return dataset
     except:
         if preview or verbose or debug:
             print("Error: Instrument not available.")
@@ -85,24 +115,13 @@ def find_if_split(dataframe):
     # 0.16337868220793833
     # 1.2132394469419747
 
-    threshold = 1e-5
+    threshold = 1e-4
     if E > threshold:
         return False
     else:
         # four parallel streams detecteds
         return True
-        
-def converge(dataframe):
-    A = dataframe.T[0:31].T
-    B = dataframe.T[32:63].T
-    C = dataframe.T[64:95].T
-    D = dataframe.T[96:127].T
-
-    # improve by doing a denoising pixel check (by vote from each stream for each pixel to exclude anomalies)
-    E = A.values + B.values + C.values + D.values
-    E = pandas.DataFrame(E)
-    E.index = A.index
-    return E
+     
 
 def temporal_sections( data, instrument, sample_rate = 'common', max_skip = 5, verbose = False ):
     frame, t = data
@@ -339,7 +358,14 @@ def regroup(dataframe, instrument, sample_rate, max_loss = 100, verbose = False)
 
 
 
-def display_data(dataframe, sample_rate):
+def display_data(dataframe, sample_rate=None):
+
+    if sample_rate == None:
+        try:
+            sample_rate == dataframe['sample_rate'][0]
+        except:
+            print("Error: No sample rate found!")
+
     image = dataframe.T
     T = dataframe.index
     fig, ax = plt.subplots(figsize=(20,10))
@@ -349,7 +375,10 @@ def display_data(dataframe, sample_rate):
         try:
             ticks = np.round((60*60)/sample_rate.seconds).astype(int)
         except:
-            ticks = 1000
+            try:
+                ticks = np.round((60*60)/sample_rate).astype(int)
+            except:
+                ticks = 1000
         ax.set_xticks(np.arange(0, len(T), ticks))
         ax.set_xticklabels(["{}h {}min {}s".format(Y.hour, Y.minute, Y.second) for Y in T[np.arange(0, len(T), ticks)]])
         
@@ -359,3 +388,71 @@ def display_data(dataframe, sample_rate):
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right",rotation_mode="anchor")
     plt.xlim([0, len(T)])
     plt.show()
+
+def combine_IMA(dataframe):
+    new_values = list()
+    new_times = list()
+
+    for j, value in enumerate(dataframe.to_numpy()):
+
+        if j%16 == 0:
+            new_values.append( value )
+            new_times.append( dataframe.index[j] )
+
+
+    for i in range(1,16):
+        index = 0
+        for j, value in enumerate(dataframe.to_numpy()):
+
+            if j%16-i == 0:
+                new_values[index] += value
+                index+=1
+
+    new_values = np.stack( new_values, axis=0 )
+    new_dataframe = pandas.DataFrame( new_values, index = new_times )
+
+    return new_dataframe
+
+def separate_IMA(dataframe):
+    new_values = list()
+    new_times = list()
+    new_dataframes = list()
+
+    for i in range(16):
+        new_values.append(list())
+        new_times.append(list())
+
+    for i, value in enumerate(dataframe.to_numpy()):
+
+        new_values[i%16].append( value )
+        new_times[i%16].append( dataframe.index[i] )
+
+    for i in range(16):
+
+        new_values[i] = np.stack( new_values[i], axis=0 )
+        new_dataframes.append( pandas.DataFrame( new_values[i], index = new_times[i] ) )
+
+    return new_dataframes
+
+def separate_ELS(dataframe):
+ 
+    A = pandas.DataFrame(dataframe.T[0:31].T, dataframe.index)
+    B = pandas.DataFrame(dataframe.T[32:63].T, dataframe.index)
+    C = pandas.DataFrame(dataframe.T[64:95].T, dataframe.index)
+    D = pandas.DataFrame(dataframe.T[96:127].T, dataframe.index)
+
+    return [A,B,C,D]
+     
+     
+def combine_ELS(dataframe):
+    A = dataframe.T[0:31].T
+    B = dataframe.T[32:63].T
+    C = dataframe.T[64:95].T
+    D = dataframe.T[96:127].T
+
+    # improve by doing a denoising pixel check (by vote from each stream for each pixel to exclude anomalies)
+    E = A.values + B.values + C.values + D.values
+    E = pandas.DataFrame(E)
+    E.index = A.index
+    
+    return E
