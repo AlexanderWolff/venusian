@@ -14,6 +14,23 @@ import matplotlib.colors as colors
 import matplotlib.dates
 
 
+def produce_data(orbit, datapath, raw = False, preview = False, debug=False, verbose=False):
+
+    dataset = dict()
+    
+    instruments = ["IMA", "ELS", "MAG"]
+    
+    for instrument in instruments:
+    
+        data = get_data( orbit, instrument, datapath, raw, preview, debug, verbose )
+        
+        if data != (None, None):
+            dataset[instrument] = data
+        else:
+            print("Error: {} not found.".format(instrument))
+    return dataset
+
+
 def get_data(orbit, instrument, datapath, raw = False, preview = False, debug=False, verbose=False):
     if verbose:
         print('orbit :{}'.format(orbit))
@@ -358,7 +375,7 @@ def regroup(dataframe, instrument, sample_rate, max_loss = 100, verbose = False)
 
 
 
-def display_data(dataframe, sample_rate=None):
+def display_data(dataframe, sample_rate=None, figsize=(20,10)):
 
     if sample_rate == None:
         try:
@@ -368,8 +385,11 @@ def display_data(dataframe, sample_rate=None):
 
     image = dataframe.T
     T = dataframe.index
-    fig, ax = plt.subplots(figsize=(20,10))
+    fig, ax = plt.subplots(figsize=figsize)
     im = ax.imshow(image, interpolation='nearest', aspect='auto')
+
+    if sample_rate == 0:
+        return
 
     try:
         try:
