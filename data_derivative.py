@@ -28,8 +28,11 @@ def normalised_gaussian(x,b,c):
     return a*np.exp( -1*((x-b)**2)/(2*c**2) )
     
 def gaussian_algorithm(dataset, index):
-        a = curve_fit(gaussian, dataset.iloc[index].index, dataset.iloc[index])
-        return {'A':a[0][0], 'B':a[0][1], 'C':a[0][2]}
+        try:
+            a = curve_fit(gaussian, dataset.iloc[index].index, dataset.iloc[index])
+            return {'A':a[0][0], 'B':a[0][1], 'C':a[0][2]}
+        except:
+            return {'A': None, 'B': None, 'C': None}
 
 def normalised_gaussian_algorithm(dataset, index):
     a = curve_fit( normalised_gaussian, dataset.iloc[index].index,
@@ -105,7 +108,10 @@ def gaussian_model(data):
 
         model['c'].append(coefficients['C'])
 
-        model['c^2'].append(coefficients['C']**2)
+        try:
+            model['c^2'].append(coefficients['C']**2)
+        except:
+            model['c^2'].append(None)
         
     return pandas.DataFrame(model, index=data.index)
 
@@ -146,3 +152,154 @@ def predict(dataset, model, index):
         for i in range(len(data)):
             prediction.append( normalised_gaussian(i, model['b'], model['c']) )
         return pandas.DataFrame(prediction, columns=['norm_gaussian'], index=data.index)
+
+def constrain_time(dataset, start_hour, start_minute, end_hour, end_minute):
+    old_date = dataset.index[0]
+    hour = start_hour
+    minute = start_minute
+
+    if hour < old_date.hour:
+        base_date = old_date + datetime.timedelta(days=1)
+    else:
+        base_date = old_date
+
+    new_date = dict()
+    new_date[0] = datetime.datetime(base_date.year, base_date.month, base_date.day, hour, minute)
+
+    hour = end_hour
+    minute = end_minute
+
+    if hour < old_date.hour:
+        base_date = old_date + datetime.timedelta(days=1)
+    else:
+        base_date = old_date
+
+    new_date[1] = datetime.datetime(base_date.year, base_date.month, base_date.day, hour, minute)
+
+    return constrain(dataset, new_date[0], new_date[1])
+
+def find_common_edges(dataset, key):
+    if 'IMA' in dataset:
+        latest_start = dataset['IMA'][key].index[0]
+        earliest_end = dataset['IMA'][key].index[-1]
+    elif 'ELS' in dataset:
+        latest_start = dataset['ELS'][key].index[0]
+        earliest_end = dataset['ELS'][key].index[-1]
+    elif 'MAG' in dataset:
+        return (  dataset['MAG'][key].index[0],  dataset['MAG'][key].index[-1] )
+    else:
+        return (None, None)
+        
+    for instrument in ['ELS', 'MAG']:
+
+        if instrument in dataset:
+            
+            if dataset[instrument][key].index[0] > latest_start:
+                latest_start = dataset[instrument][key].index[0]
+
+            if dataset[instrument][key].index[-1]< earliest_end:
+                earliest_end = dataset[instrument][key].index[-1]
+            
+    return (latest_start, earliest_end)
+
+def constrain(data, start_time, end_time):
+    start_index = 0
+    end_index = -1
+
+    for i, time in enumerate(data.index):
+
+        if time >= start_time:
+            start_index = i
+            break
+
+    for i, time in enumerate(data.index):
+
+        if time == end_time:
+            break
+        elif time > end_time:
+            end_index = i
+            break
+
+    return data.iloc[start_index:end_index]
+
+def enhance_dataset(dataset, key='default'):
+    from sklearn import preprocessing
+
+    min_max_scaler = preprocessing.MinMaxScaler()
+
+    if 'IMA' in dataset:
+        s = min_max_scaler.fit_transform(dataset['IMA'][key].T)
+        dataset['IMA']['enhanced'] = pandas.DataFrame(s).T
+        dataset['IMA']['enhanced'].index = dataset['IMA'][key].index
+
+    if 'ELS' in dataset:
+        s = min_max_scaler.fit_transform(dataset['ELS'][key].T)
+        dataset['ELS']['enhanced'] = pandas.DataFrame(s).T
+        dataset['ELS']['enhanced'].index = dataset['ELS'][key].index
+
+    if 'MAG' in dataset:
+        s = min_max_scaler.fit_transform(dataset['MAG'][key])
+        dataset['MAG']['enhanced'] = pandas.DataFrame(s)
+        dataset['MAG']['enhanced'].index = dataset['MAG'][key].index
+
+    return dataset
+
+def get_hourly_ticks(indices):
+    last_hour = indices[0].hour
+    hourly_ticks = list()
+
+    for i, index in enumerate(indices):
+        if index.hour != last_hour:
+            hourly_ticks.append([i, index])
+            last_hour = index.hour
+    return hourly_ticks
+
+def tri_plot(dataset, labels, figsize=(20,10)):
+    image = dict()
+    im = dict()
+    ticks = dict()
+
+    fig, ax = plt.subplots(3,1,figsize=figsize)
+
+    latest_start, earliest_end = find_common_edges(dataset, labels[0])
+
+    if 'MAG' in dataset:
+        
+        MAG_label=labels[2]
+        MAG = constrain(dataset['MAG'][MAG_label], latest_start, earliest_end)
+        
+        im[2] = ax[2].plot(MAG)
+        ticks['MAG'] = get_hourly_ticks(MAG.index)
+        ax[2].set_xticks( [i[1] for i in ticks['MAG']] )
+        ax[2].set_xticklabels(["{}h\n({})".format(Y[1].hour, Y[0]) for Y in ticks['MAG']])
+        ax[2].set_ylabel('MAG\nmagnetometer\n({})'.format(MAG_label))
+        ax[2].set_xlim(MAG.index[0], MAG.index[-1])
+
+
+    if 'ELS' in dataset:
+        
+        ELS_label=labels[1]
+        ELS = constrain(dataset['ELS'][ELS_label], latest_start, earliest_end)
+        image['ELS'] = ELS.T
+        
+        im[1] = ax[1].imshow(image['ELS'], interpolation='nearest', aspect='auto')
+        ticks['ELS'] = get_hourly_ticks(ELS.index)
+        ax[1].set_xticks( [i[0] for i in ticks['ELS']] )
+        ax[1].set_xticklabels(["{}h\n({})".format(Y[1].hour, Y[0]) for Y in ticks['ELS']])
+        ax[1].set_ylabel('ELS\nelectron spectrometer\n({})'.format(ELS_label))
+
+
+    if 'IMA' in dataset:
+        
+        IMA_label=labels[0]
+        IMA = constrain(dataset['IMA'][IMA_label], latest_start, earliest_end)
+        image['IMA'] = IMA.T
+        
+        im[0] = ax[0].imshow(image['IMA'], interpolation='nearest', aspect='auto')
+        ticks['IMA'] = get_hourly_ticks(IMA.index)
+        ax[0].set_xticks( [i[0] for i in ticks['IMA']] )
+        ax[0].set_xticklabels(["{}h\n({})".format(Y[1].hour, Y[0]) for Y in ticks['IMA']])
+        ax[0].set_ylabel('IMA\nion mass analyser\n({})'.format(IMA_label))
+
+
+    plt.show()
